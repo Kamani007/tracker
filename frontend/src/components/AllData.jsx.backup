@@ -1,0 +1,762 @@
+import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ArrowLeft, RefreshCw, Download } from "lucide-react";
+import Navigation from "./Navigation";
+import BoxPlot from "./BoxPlot";
+import { dataCache, CACHE_KEYS, CACHE_EXPIRATION } from "../lib/cache";
+import { fileDownloadAPI, API_BASE_URL } from "../lib/api";
+
+// SheetBoxPlot Component for sheet-level analysis with shared Y-axis
+const SheetBoxPlot = ({ data, parameter, parameterLabel, width, height }) => {
+  // Create batch color mapping
+  const batchColors = {
+    colors: [
+      '#3b82f6', // blue
+      '#10b981', // green
+      '#f59e0b', // amber
+      '#ef4444', // red
+      '#8b5cf6', // violet
+      '#06b6d4', // cyan
+      '#f97316', // orange
+      '#84cc16', // lime
+      '#ec4899', // pink
+      '#6366f1', // indigo
+    ]
+  };
+
+  // Validate input data
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-48 text-muted-foreground">
+        <p>No data available for {parameterLabel}</p>
+      </div>
+    );
+  }
+
+  // Process data for box plot visualization
+  const processedData = data
+    .filter(item => {
+      if (!item) {
+        console.warn('⚠️ Null item in data array');
+        return false;
+      }
+      if (!item[parameter]) {
+        console.warn(`⚠️ No ${parameter} data for sheet ${item.sheet || 'unknown'}`);
+        return false;
+      }
+      return item[parameter] !== null;
+    })
+    .map((item, index) => {
+      const batchIndex = [...new Set(data.map(d => d.batch))].indexOf(item.batch);
+      const stats = item[parameter];
+      
+      // Validate stats object
+      if (!stats || typeof stats !== 'object') {
+        console.error(`⚠️ Invalid stats for ${parameter}:`, stats);
+        return null;
+      }
+      
+      return {
+        batch: item.sheet, // Use sheet name as label
+        batchId: item.batch,
+        color: batchColors.colors[batchIndex % batchColors.colors.length],
+        min: stats.min,
+        q1: stats.q1,
+        median: stats.median,
+        q3: stats.q3,
+        max: stats.max,
+        mean: stats.mean,
+        count: stats.count
+      };
+    })
+    .filter(Boolean);
+
+  if (processedData.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-48 text-muted-foreground">
+        <p>No data available for {parameterLabel}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ width, height: height || 300 }}>
+      {/* Single unified box plot with shared Y-axis and batch-specific colors */}
+      <div className="w-full">
+        <MultiColorBoxPlot 
+          data={processedData}
+          width="100%"
+          height={height || 300}
+          unit={parameterLabel.includes('%') ? '%' : ''}
+        />
+      </div>
+      
+      {/* Batch Legend */}
+      <div className="mt-4 flex flex-wrap gap-4">
+        <h6 className="text-sm font-medium text-muted-foreground">Batch Colors:</h6>
+        {[...new Set(data.map(d => d.batch))].map((batch, index) => (
+          <div key={batch} className="flex items-center space-x-2">
+            <div 
+              className="w-4 h-4 rounded"
+              style={{ backgroundColor: batchColors.colors[index % batchColors.colors.length] }}
+            />
+            <span className="text-sm text-muted-foreground">{batch}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// MultiColorBoxPlot component - renders all box plots with shared Y-axis but different colors
+const MultiColorBoxPlot = ({ data, width = '100%', height = 300, unit = '' }) => {
+  const containerRef = React.useRef(null);
+  const [actualWidth, setActualWidth] = React.useState(400);
+  const [hoveredData, setHoveredData] = React.useState(null);
+
+  React.useEffect(() => {
+    if (width === "100%" && containerRef.current) {
+      const updateWidth = () => {
+        setActualWidth(containerRef.current.offsetWidth);
+      };
+      updateWidth();
+      window.addEventListener('resize', updateWidth);
+      return () => window.removeEventListener('resize', updateWidth);
+    } else if (typeof width === 'number') {
+      setActualWidth(width);
+    }
+  }, [width]);
+
+  if (!data || data.length === 0) return null;
+
+  const svgWidth = actualWidth;
+  const margin = { top: 20, right: 20, bottom: 60, left: 60 };
+  const chartWidth = svgWidth - margin.left - margin.right;
+  const chartHeight = height - margin.top - margin.bottom;
+
+  // Calculate scale
+  const allValues = data.flatMap(d => [d.min, d.max]);
+  const dataMin = Math.min(...allValues);
+  const dataMax = Math.max(...allValues);
+  const dataRange = dataMax - dataMin;
+  const padding = dataRange * 0.1;
+  const scaleMin = dataMin - padding;
+  const scaleMax = dataMax + padding;
+  const scaleRange = scaleMax - scaleMin;
+
+  const scale = (value) => {
+    return chartHeight - ((value - scaleMin) / scaleRange) * chartHeight;
+  };
+
+  const boxWidth = Math.min(40, chartWidth / data.length * 0.6);
+  const spacing = chartWidth / data.length;
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      <svg width={svgWidth} height={height} className="overflow-visible">
+        <g transform={`translate(${margin.left}, ${margin.top})`}>
+          {/* Y-axis grid lines and labels */}
+          {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => {
+            const y = chartHeight * ratio;
+            const value = scaleMax - (scaleRange * ratio);
+            return (
+              <g key={i}>
+                <line
+                  x1={0}
+                  y1={y}
+                  x2={chartWidth}
+                  y2={y}
+                  stroke="#374151"
+                  strokeWidth={0.5}
+                  strokeDasharray="2,2"
+                  opacity={0.3}
+                />
+                <text
+                  x={-10}
+                  y={y + 4}
+                  fontSize="11"
+                  fill="#9CA3AF"
+                  textAnchor="end"
+                >
+                  {value.toFixed(2)}{unit}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Box plots with individual colors */}
+          {data.map((d, i) => {
+            const x = spacing * i + spacing / 2;
+            const minY = scale(d.min);
+            const q1Y = scale(d.q1);
+            const medianY = scale(d.median);
+            const q3Y = scale(d.q3);
+            const maxY = scale(d.max);
+            const meanY = scale(d.mean);
+
+            return (
+              <g 
+                key={`${d.batch}-${i}`} 
+                transform={`translate(${x}, 0)`}
+                onMouseEnter={() => setHoveredData(d)}
+                onMouseLeave={() => setHoveredData(null)}
+                style={{ cursor: 'pointer' }}
+              >
+                {/* Whiskers */}
+                <line x1={0} y1={minY} x2={0} y2={q1Y} stroke={d.color} strokeWidth={2} />
+                <line x1={0} y1={q3Y} x2={0} y2={maxY} stroke={d.color} strokeWidth={2} />
+                <line x1={-boxWidth/4} y1={minY} x2={boxWidth/4} y2={minY} stroke={d.color} strokeWidth={2} />
+                <line x1={-boxWidth/4} y1={maxY} x2={boxWidth/4} y2={maxY} stroke={d.color} strokeWidth={2} />
+
+                {/* Box */}
+                <rect
+                  x={-boxWidth / 2}
+                  y={q3Y}
+                  width={boxWidth}
+                  height={q1Y - q3Y}
+                  fill={d.color}
+                  fillOpacity={0.3}
+                  stroke={d.color}
+                  strokeWidth={2}
+                />
+
+                {/* Median line */}
+                <line
+                  x1={-boxWidth / 2}
+                  y1={medianY}
+                  x2={boxWidth / 2}
+                  y2={medianY}
+                  stroke={d.color}
+                  strokeWidth={3}
+                />
+
+                {/* Mean dot */}
+                <circle cx={0} cy={meanY} r={4} fill={d.color} stroke="white" strokeWidth={1.5} />
+
+                {/* X-axis labels */}
+                <text
+                  x={0}
+                  y={chartHeight + 15}
+                  fontSize="10"
+                  fill="#9CA3AF"
+                  textAnchor="middle"
+                  transform={`rotate(-45, 0, ${chartHeight + 15})`}
+                >
+                  {d.batch}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+
+      {/* Tooltip */}
+      {hoveredData && (
+        <div className="absolute top-2 right-2 bg-gray-900 border border-gray-700 rounded p-3 text-xs text-white shadow-lg">
+          <div className="font-semibold mb-1" style={{ color: hoveredData.color }}>
+            {hoveredData.batch}
+          </div>
+          <div className="space-y-0.5">
+            <div>Batch: {hoveredData.batchId}</div>
+            <div>Max: {hoveredData.max.toFixed(2)}{unit}</div>
+            <div>Q3: {hoveredData.q3.toFixed(2)}{unit}</div>
+            <div>Median: {hoveredData.median.toFixed(2)}{unit}</div>
+            <div>Mean: {hoveredData.mean.toFixed(2)}{unit}</div>
+            <div>Q1: {hoveredData.q1.toFixed(2)}{unit}</div>
+            <div>Min: {hoveredData.min.toFixed(2)}{unit}</div>
+            <div>Count: {hoveredData.count}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AllData = () => {
+  const [allDataInfo, setAllDataInfo] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [lastLoadedTime, setLastLoadedTime] = useState(null);
+  
+  // CACHED DATA - loaded once, filtered locally
+  const [cachedData, setCachedData] = useState(null);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  
+  // Selection states
+  const [selectedBatches, setSelectedBatches] = useState([]);
+  const [selectedParameters, setSelectedParameters] = useState(['PCE']);
+  const [selectedSheets, setSelectedSheets] = useState([]);
+  
+  // Chart data (now filtered from cache)
+  const [boxPlotData, setBoxPlotData] = useState(null);
+  const [sheetBoxPlotData, setSheetBoxPlotData] = useState(null);
+  
+  // Available options
+  const [availableBatches, setAvailableBatches] = useState([]);
+  const [availableSheets, setAvailableSheets] = useState([]);
+  
+  const parameters = [
+    { key: 'PCE', label: 'PCE (%)', color: '#3b82f6' },
+    { key: 'FF', label: 'FF (%)', color: '#10b981' },
+    { key: 'Max Power', label: 'Max Power (mW/cm²)', color: '#f59e0b' },
+    { key: 'HI', label: 'HI (%)', color: '#ef4444' },
+    { key: 'I_sc', label: 'J_sc (mA/cm²)', color: '#8b5cf6' },
+    { key: 'V_oc', label: 'V_oc (V)', color: '#06b6d4' },
+    { key: 'R_series', label: 'R_series (Ω·cm²)', color: '#f97316' },
+    { key: 'R_shunt', label: 'R_shunt (Ω·cm²)', color: '#84cc16' }
+  ];
+
+  // Load all data ONCE on component mount (PREFETCHING)
+  useEffect(() => {
+    loadAllDataFull();
+  }, []);
+
+  // Update available sheets when batches change
+  useEffect(() => {
+    if (selectedBatches.length > 0 && cachedData) {
+      updateAvailableSheets();
+    } else {
+      setAvailableSheets([]);
+      setSelectedSheets([]);
+    }
+  }, [selectedBatches, cachedData]);
+
+  // Filter box plot data locally (instant)
+  useEffect(() => {
+    if (selectedBatches.length > 0 && selectedParameters.length > 0 && cachedData) {
+      filterBoxPlotDataLocal();
+    } else {
+      setBoxPlotData(null);
+    }
+  }, [selectedBatches, selectedParameters, cachedData]);
+
+  // Filter sheet box plot data locally (instant)
+  useEffect(() => {
+    try {
+      if (selectedSheets.length > 0 && selectedParameters.length > 0 && cachedData) {
+        filterSheetBoxPlotDataLocal();
+      } else {
+        setSheetBoxPlotData(null);
+      }
+    } catch (error) {
+      console.error('❌ Error filtering sheet box plot data:', error);
+      setSheetBoxPlotData(null);
+    }
+  }, [selectedSheets, selectedParameters, cachedData]);
+
+  // PREFETCH: Load all data once from Azure (with caching)
+  const loadAllDataFull = async () => {
+    try {
+      setLoading(true);
+      setDataLoading(true);
+      setError(null);
+      
+      // Check cache first
+      const cached = dataCache.get(CACHE_KEYS.ALL_DATA_FULL, CACHE_EXPIRATION.SESSION);
+      if (cached) {
+        console.log('✅ Using cached All Data');
+        setCachedData(cached);
+        setAllDataInfo(cached);
+        setAvailableBatches(cached.batches || []);
+        setLastLoadedTime(new Date().toLocaleString());
+        setLoading(false);
+        setDataLoading(false);
+        return;
+      }
+      
+      console.log('🚀 Fetching data from server...');
+      const startTime = Date.now();
+      
+      // Use the shared API_BASE_URL (automatically switches between local and production)
+      const response = await fetch(`${API_BASE_URL}/all-data-full`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const loadTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.log(`✅ Data loaded in ${loadTime}s:`, {
+        batches: data.total_batches,
+        sheets: data.total_sheets,
+        parameters: data.parameters?.length
+      });
+      
+      // Cache the complete dataset
+      dataCache.set(CACHE_KEYS.ALL_DATA_FULL, data);
+      setCachedData(data);
+      setAllDataInfo(data);
+      setAvailableBatches(data.batches || []);
+      setLastLoadedTime(new Date().toLocaleString());
+      
+    } catch (err) {
+      console.error('❌ Failed to load data:', err);
+      setError('Failed to load data. Please try again.');
+    } finally {
+      setLoading(false);
+      setDataLoading(false);
+    }
+  };
+
+  // Download data.xlsx from Azure
+  const handleDownloadData = async () => {
+    setIsDownloading(true);
+    try {
+      await fileDownloadAPI.downloadFile('data.xlsx');
+    } catch (error) {
+      console.error('Download error:', error);
+      alert(`Failed to download data.xlsx: ${error.message}`);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  // INSTANT FILTERING: Filter batch data from cache (no API call)
+  const filterBoxPlotDataLocal = () => {
+    if (!cachedData || !cachedData.batch_stats) return;
+    
+    console.log('⚡ Filtering batch data locally (instant)...');
+    const filtered = {};
+    
+    selectedParameters.forEach(param => {
+      const allBatchStats = cachedData.batch_stats[param] || [];
+      // Filter only selected batches
+      filtered[param] = allBatchStats.filter(stat => 
+        selectedBatches.includes(stat.batch)
+      );
+    });
+    
+    setBoxPlotData(filtered);
+  };
+
+  // INSTANT FILTERING: Filter sheet data from cache (no API call)
+  const filterSheetBoxPlotDataLocal = () => {
+    try {
+      if (!cachedData || !cachedData.sheet_stats) {
+        console.warn('⚠️ No cached data or sheet_stats available');
+        setSheetBoxPlotData(null);
+        return;
+      }
+      
+      if (selectedSheets.length === 0) {
+        console.log('⚡ No sheets selected, clearing sheet box plot data');
+        setSheetBoxPlotData(null);
+        return;
+      }
+      
+      if (selectedParameters.length === 0) {
+        console.log('⚡ No parameters selected, clearing sheet box plot data');
+        setSheetBoxPlotData(null);
+        return;
+      }
+      
+      console.log('⚡ Filtering sheet data locally (instant)...');
+      console.log('📊 Selected sheets:', selectedSheets);
+      console.log('📊 Selected parameters:', selectedParameters);
+      console.log('📊 Available sheet stats keys (first 10):', Object.keys(cachedData.sheet_stats).slice(0, 10));
+      console.log('📊 Total sheet stats available:', Object.keys(cachedData.sheet_stats).length);
+      
+      // Map selected sheets to their stats
+      const sheetStatsArray = selectedSheets.map(sheetKey => {
+        // sheetKey format is "batchId-sheetName", we need to use this exact key
+        const stats = cachedData.sheet_stats[sheetKey];
+        if (!stats) {
+          console.warn(`⚠️ No stats found for sheet key: ${sheetKey}`);
+          console.warn(`   Available keys starting with same batch:`, 
+            Object.keys(cachedData.sheet_stats)
+              .filter(k => k.startsWith(sheetKey.split('-')[0]))
+              .slice(0, 5)
+          );
+          return null;
+        }
+        console.log(`✅ Found stats for ${sheetKey}:`, Object.keys(stats));
+        return stats;
+      }).filter(Boolean); // Remove null entries
+      
+      console.log('📈 Filtered sheet stats:', sheetStatsArray.length, 'sheets with data');
+      
+      if (sheetStatsArray.length === 0) {
+        console.warn('⚠️ No valid sheet stats found after filtering, setting null');
+        setSheetBoxPlotData(null);
+        return;
+      }
+      
+      console.log('✅ Setting sheet box plot data with', sheetStatsArray.length, 'sheets');
+      setSheetBoxPlotData({
+        data: sheetStatsArray,
+        parameters: selectedParameters
+      });
+    } catch (error) {
+      console.error('❌ Error in filterSheetBoxPlotDataLocal:', error);
+      setSheetBoxPlotData(null);
+    }
+  };
+
+  const updateAvailableSheets = () => {
+    if (!cachedData || selectedBatches.length === 0) return;
+    
+    // Get all sheets from selected batches
+    const sheetsMap = new Map();
+    
+    selectedBatches.forEach(batchId => {
+      const batchSheets = cachedData.batch_sheets[batchId] || [];
+      batchSheets.forEach(sheet => {
+        const key = sheet;
+        const label = `${batchId}-${sheet}`;
+        
+        if (!sheetsMap.has(key)) {
+          sheetsMap.set(key, []);
+        }
+        sheetsMap.get(key).push({ batchId, label });
+      });
+    });
+    
+    // Create sheet options with batch prefixes
+    const sheetOptions = [];
+    sheetsMap.forEach((batches, sheetName) => {
+      batches.forEach(({ batchId, label }) => {
+        sheetOptions.push({
+          key: `${batchId}-${sheetName}`,
+          label: label,
+          batchId: batchId,
+          sheetName: sheetName
+        });
+      });
+    });
+    
+    setAvailableSheets(sheetOptions);
+  };
+
+  const handleBatchToggle = (batchId, checked) => {
+    if (checked) {
+      setSelectedBatches(prev => [...prev, batchId]);
+    } else {
+      setSelectedBatches(prev => prev.filter(id => id !== batchId));
+    }
+  };
+
+  const handleSelectAllBatches = () => {
+    if (selectedBatches.length === availableBatches.length) {
+      setSelectedBatches([]);
+    } else {
+      setSelectedBatches([...availableBatches]);
+    }
+  };
+
+  const handleParameterToggle = (paramKey, checked) => {
+    if (checked) {
+      setSelectedParameters(prev => [...prev, paramKey]);
+    } else {
+      setSelectedParameters(prev => prev.filter(key => key !== paramKey));
+    }
+  };
+
+  const handleSelectAllParameters = () => {
+    if (selectedParameters.length === parameters.length) {
+      setSelectedParameters(['PCE']); // Keep at least one selected
+    } else {
+      setSelectedParameters(parameters.map(p => p.key));
+    }
+  };
+
+  const handleSheetToggle = (sheetKey, checked) => {
+    if (checked) {
+      setSelectedSheets(prev => [...prev, sheetKey]);
+    } else {
+      setSelectedSheets(prev => prev.filter(key => key !== sheetKey));
+    }
+  };
+
+  const handleSelectAllSheets = () => {
+    if (selectedSheets.length === availableSheets.length) {
+      setSelectedSheets([]);
+    } else {
+      setSelectedSheets(availableSheets.map(s => s.key));
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center max-w-md">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-lg font-semibold">Processing Latest Data from Azure...</p>
+          <p className="mt-2 text-sm text-muted-foreground">Reading 4MB Excel file with all batches and sheets</p>
+          <p className="mt-1 text-xs text-gray-500">Estimated time: 10-20 seconds</p>
+          <div className="mt-4 text-xs text-blue-400 bg-blue-950/30 border border-blue-800 rounded px-3 py-2">
+            💡 Tip: This loads the latest data every time to ensure accuracy
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Navigation */}
+      <Navigation />
+      
+      {/* Header */}
+      <div className="border-b border-border p-4">
+        <div className="flex items-center gap-4">
+          <Link to="/">
+            <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Dashboard
+            </Button>
+          </Link>
+          {lastLoadedTime && (
+            <p className="text-xs text-green-500">
+              ✓ Latest data loaded at {lastLoadedTime}
+            </p>
+          )}
+          <div className="ml-auto mr-32 flex gap-2">
+            <Button onClick={handleDownloadData} variant="outline" size="sm" disabled={isDownloading}>
+              <Download className={`h-4 w-4 mr-2`} />
+              {isDownloading ? 'Downloading...' : 'Download Data'}
+            </Button>
+            <Button onClick={loadAllDataFull} variant="outline" size="sm" disabled={dataLoading}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${dataLoading ? 'animate-spin' : ''}`} />
+              {dataLoading ? 'Loading...' : 'Refresh Data'}
+            </Button>
+          </div>
+        </div>
+        {error && (
+          <div className="mt-2 p-2 bg-red-100 border border-red-400 text-red-700 rounded">
+            {error}
+          </div>
+        )}
+      </div>
+
+      <div className="p-6 space-y-6">
+
+        {/* Charts - arranged in rows with controls above each graph */}
+        <div className="space-y-8">
+          {/* Box Plot Chart with Batch and Parameter Selection */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Box Plot Analysis</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Distribution analysis for selected batches and parameters
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Batch and Parameter Selection for Box Plot */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 bg-muted/30 rounded-lg">
+                {/* Batch Selection */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-semibold">Batch Selection</h4>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={handleSelectAllBatches}
+                    >
+                      {selectedBatches.length === availableBatches.length ? 'Deselect All' : 'Select All'}
+                    </Button>
+                  </div>
+                  <div className="space-y-2 max-h-32 overflow-y-auto">
+                    {availableBatches.map(batchId => (
+                      <div key={batchId} className="flex items-center space-x-2">
+                        <Checkbox
+                          id={`batch-boxplot-${batchId}`}
+                          checked={selectedBatches.includes(batchId)}
+                          onCheckedChange={(checked) => handleBatchToggle(batchId, checked)}
+                        />
+                        <label 
+                          htmlFor={`batch-boxplot-${batchId}`}
+                          className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                        >
+                          {batchId}
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {selectedBatches.length} of {availableBatches.length} selected
+                  </div>
+                </div>
+
+                {/* Parameter Selection for Box Plot */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-semibold">Parameter Selection</h4>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={handleSelectAllParameters}
+                    >
+                      {selectedParameters.length === parameters.length ? 'Reset' : 'Select All'}
+                    </Button>
+                  </div>
+                  <div className="w-full overflow-x-auto">
+                    <div className="flex flex-wrap gap-2">
+                      {parameters.map(param => (
+                        <Button
+                          key={param.key}
+                          onClick={() => handleParameterToggle(param.key, !selectedParameters.includes(param.key))}
+                          variant={selectedParameters.includes(param.key) ? 'default' : 'outline'}
+                          size="sm"
+                          className={`whitespace-nowrap transition-all duration-200 ${
+                            selectedParameters.includes(param.key)
+                              ? 'shadow-lg transform scale-105'
+                              : 'hover:scale-105'
+                          }`}
+                          style={{
+                            backgroundColor: selectedParameters.includes(param.key) ? param.color : 'transparent',
+                            borderColor: param.color,
+                            color: selectedParameters.includes(param.key) ? 'white' : param.color
+                          }}
+                        >
+                          {param.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {selectedParameters.length} of {parameters.length} selected
+                  </div>
+                </div>
+              </div>
+
+              {/* Box Plot Chart */}
+              <div style={{ width: '100%', minHeight: '400px' }}>
+                {boxPlotData && selectedParameters.length > 0 ? (
+                  <div className="space-y-6">
+                    {selectedParameters.map(param => (
+                      <div key={param}>
+                        <h4 className="text-sm font-medium mb-3">
+                          {parameters.find(p => p.key === param)?.label || param}
+                        </h4>
+                        <BoxPlot 
+                          data={boxPlotData[param] || []} 
+                          width="100%"
+                          height={300}
+                          color={parameters.find(p => p.key === param)?.color || '#3b82f6'}
+                          unit={parameters.find(p => p.key === param)?.label?.includes('%') ? '%' : ''}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
+                    <div className="text-center">
+                      <p>Select batches and parameters to view box plot</p>
+                      <p className="text-xs mt-1">Statistical distribution will be displayed here</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AllData;

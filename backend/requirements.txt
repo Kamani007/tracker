@@ -1,0 +1,23 @@
+# Essential dependencies for Passdown App - Clean Version
+Flask==3.0.0
+Flask-CORS==4.0.0
+pymongo==4.6.0
+python-dotenv==1.0.0
+certifi==2023.7.22
+requests==2.31.0
+gunicorn==21.2.0
+
+# Azure Storage for CSV files
+azure-storage-blob==12.19.0
+
+# Data Analysis dependencies (compatible with Python 3.10-3.12)
+pandas==2.2.0
+numpy==1.26.4
+openpyxl==3.1.2
+
+# Parquet file processing
+pyarrow==14.0.1
+
+# Scheduled tasks for cache refresh
+schedule==1.2.0
+pytz==2024.1  # Timezone support for AST

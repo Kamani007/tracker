@@ -1,0 +1,42 @@
+{
+  "routes": [
+    {
+      "route": "/.auth/*",
+      "allowedRoles": ["anonymous"]
+    },
+    {
+      "route": "/*",
+      "allowedRoles": ["anonymous"]
+    }
+  ],
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/images/*.{png,jpg,gif,svg,ico}", "/css/*", "/js/*", "/.auth/*"]
+  },
+  "auth": {
+    "identityProviders": {
+      "azureActiveDirectory": {
+        "registration": {
+          "openIdIssuer": "https://login.microsoftonline.com/common/v2.0",
+          "clientIdSettingName": "AZURE_CLIENT_ID",
+          "clientSecretSettingName": "AZURE_CLIENT_SECRET"
+        },
+        "login": {
+          "loginParameters": ["domain_hint=rayleighsolartech.com"]
+        }
+      }
+    }
+  },
+  "responseOverrides": {
+    "401": {
+      "redirect": "/.auth/login/aad",
+      "statusCode": 302
+    }
+  },
+  "platform": {
+    "apiRuntime": "node:20"
+  },
+  "globalHeaders": {
+    "content-security-policy": "default-src 'self' https://*.azurestaticapps.net https://*.azure.com https://*.azurewebsites.net https://*.mongodb.net https://*.blob.core.windows.net https://*.onrender.com; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://*.azurestaticapps.net https://*.azure.com https://*.azurewebsites.net https://*.mongodb.net https://*.blob.core.windows.net https://*.onrender.com http://localhost:*;"
+  }
+}

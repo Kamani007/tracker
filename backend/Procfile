@@ -1,0 +1,5 @@
+# Azure Web App configuration for Python Flask application
+# This file is automatically detected by Azure Web App
+
+# Startup command for Azure Web App
+web: gunicorn --bind 0.0.0.0:$PORT --timeout 600 --workers 1 --preload app:app
